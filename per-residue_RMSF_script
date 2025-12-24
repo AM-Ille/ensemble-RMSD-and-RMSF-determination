@@ -3,52 +3,136 @@ import numpy as np
 import pandas as pd
 import glob
 
-pdb_folder = "/input_file_path/" #folder path for input folder containing individual PDB files of one conformational ensemble
-output_file = "/output_file_path/output_RMSF_file.xlsx" #file path for output Excel file
+pdb_folder = "/input_file_path/"  # folder path for input folder containing individual PDB files of one conformational ensemble
+output_file = "/output_file_path/output_RMSF_file.xlsx"  # file path for output Excel file
 
 def align_structures(reference, target):
     ref_center = np.mean(reference, axis=0)
     target_center = np.mean(target, axis=0)
     ref_centered = reference - ref_center
     target_centered = target - target_center
+
     covariance_matrix = np.dot(target_centered.T, ref_centered)
     U, S, Vt = np.linalg.svd(covariance_matrix)
     R = np.dot(U, Vt)
+
     if np.linalg.det(R) < 0:
         Vt[-1, :] *= -1
         R = np.dot(U, Vt)
+
     aligned = np.dot(target_centered, R) + ref_center
     return aligned
 
 def parse_pdb(filepath):
     coords = []
     residue_info = []
+
     with open(filepath, 'r') as f:
         for line in f:
             if line.startswith("ATOM") and line[12:16].strip() == "CA":
-                coords.append([float(line[30:38]), float(line[38:46]), float(line[46:54])])
-                residue_info.append((line[21], int(line[22:26].strip()), line[17:20].strip()))
-    return np.array(coords), residue_info
+                coords.append([
+                    float(line[30:38]),
+                    float(line[38:46]),
+                    float(line[46:54])
+                ])
+                residue_info.append((
+                    line[21],
+                    int(line[22:26].strip()),
+                    line[17:20].strip()
+                ))
+
+    return np.array(coords, dtype=float), residue_info
+
+def rmsd_after_alignment(reference_coords, target_coords):
+    aligned = align_structures(reference_coords, target_coords)
+    diffs = aligned - reference_coords
+    return np.sqrt(np.mean(np.sum(diffs * diffs, axis=1)))
+
+def compute_mean_structure(reference_coords, coords_list):
+    aligned_coords_list = []
+    for coords in coords_list:
+        aligned = align_structures(reference_coords, coords)
+        aligned_coords_list.append(aligned)
+
+    stacked = np.stack(aligned_coords_list, axis=0)
+    mean_coords = np.mean(stacked, axis=0)
+    return mean_coords
+
+def select_centroid_structure(pdb_files):
+    coords_list = []
+    residue_info_ref = None
+    n_ref = None
+
+    for fp in pdb_files:
+        coords, residue_info = parse_pdb(fp)
+
+        if residue_info_ref is None:
+            residue_info_ref = residue_info
+            n_ref = len(coords)
+        else:
+            if len(coords) != n_ref:
+                raise ValueError(
+                    f"CA count mismatch in {os.path.basename(fp)} "
+                    f"(expected {n_ref}, got {len(coords)}). "
+                    "All PDBs in the folder must have the same CA atoms in the same order."
+                )
+
+        coords_list.append(coords)
+
+    initial_reference = coords_list[0]
+    mean_coords = compute_mean_structure(initial_reference, coords_list)
+
+    best_idx = None
+    best_rmsd = None
+    for i, coords in enumerate(coords_list):
+        r = rmsd_after_alignment(mean_coords, coords)
+        if best_rmsd is None or r < best_rmsd:
+            best_rmsd = r
+            best_idx = i
+
+    centroid_file = pdb_files[best_idx]
+    centroid_coords = coords_list[best_idx]
+    return centroid_file, centroid_coords, residue_info_ref
 
 def calculate_rmsf(reference_coords, pdb_files):
     deviations = {i: [] for i in range(len(reference_coords))}
+
     for pdb_file in pdb_files:
         target_coords, _ = parse_pdb(pdb_file)
+
+        if len(target_coords) != len(reference_coords):
+            raise ValueError(
+                f"CA count mismatch when computing RMSF in {os.path.basename(pdb_file)} "
+                f"(expected {len(reference_coords)}, got {len(target_coords)})."
+            )
+
         aligned_coords = align_structures(reference_coords, target_coords)
+
         for i in range(len(reference_coords)):
             deviation = np.linalg.norm(aligned_coords[i] - reference_coords[i])
             deviations[i].append(deviation)
-    rmsf_values = [np.sqrt(np.mean(np.square(deviations[i]))) for i in deviations]
+
+    rmsf_values = [
+        np.sqrt(np.mean(np.square(deviations[i])))
+        for i in deviations
+    ]
     return rmsf_values
 
 def main(pdb_folder, output_file):
     pdb_files = sorted(glob.glob(os.path.join(pdb_folder, "*.pdb")))
+
     if not pdb_files:
         print("No PDB files found in the folder.")
         return
+
     print(f"Processing PDB files in folder: {pdb_folder}")
-    reference_coords, residue_info = parse_pdb(pdb_files[0])
+
+    # NEW: pick centroid PDB as reference (instead of first file), like Script 1
+    centroid_file, reference_coords, residue_info = select_centroid_structure(pdb_files)
+    print(f"Centroid PDB used as reference: {os.path.basename(centroid_file)}")
+
     rmsf_values = calculate_rmsf(reference_coords, pdb_files)
+
     output_data = [
         {
             "Chain ID": residue[0],
@@ -58,8 +142,10 @@ def main(pdb_folder, output_file):
         }
         for residue, rmsf in zip(residue_info, rmsf_values)
     ]
+
     output_df = pd.DataFrame(output_data)
     output_df.to_excel(output_file, index=False)
+
     print(f"RMSF results saved to: {output_file}")
 
 if __name__ == "__main__":
