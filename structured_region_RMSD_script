@@ -6,7 +6,7 @@ import glob
 input_excel = "/input_file_path/input_Excel_file.xlsx" #file path for input Excel file designating structured region ranges
 folder1 = "/input_PDB_folder1_path/" #folder path for input folder containing individual PDB files of the 1st conformational ensemble
 folder2 = "/input_PDB_folder2_path/" #folder path for input folder containing individual PDB files of the 2nd conformational ensemble
-output_folder = "/output_folder_path" #folder path for output Excel file
+output_folder = "/output_folder_path/" #folder path for output Excel file
 os.makedirs(output_folder, exist_ok=True)
 
 def calculate_rmsd(pdb_file1, pdb_file2, range1, range2):
@@ -41,7 +41,6 @@ def calculate_rmsd(pdb_file1, pdb_file2, range1, range2):
 
 def main(input_excel, folder1, folder2, output_folder):
     data = pd.read_excel(input_excel)
-    # Process only the first row
     row = data.iloc[0]
     pdb_id = row["PDB_ID"]
     folder1_range = row["Folder 1 Range"]
